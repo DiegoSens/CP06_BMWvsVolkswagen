@@ -1,0 +1,215 @@
+---
+title: "CP06 - BMW vs. Volkswagen"
+author: "Diego Senso González"
+date: "30/11/2020"
+output:
+  html_document:
+    theme: united
+    df_print: paged
+    toc: yes
+    toc_depth: 5
+    toc_float:
+      collapsed: no
+      smooth_scroll: yes
+---
+
+# Objetivo
+
+El objetivo del presente informe es realizar un modelo GARCH con los datos de cotización de la empresa BMW y un modelo VAR mensual entre los dos activos (BMW y Volkswagen).
+
+```{r warning=FALSE, echo=FALSE, message=FALSE}
+library(tidyverse)
+library(broom)
+library(flextable)
+library(mgcv)
+library(reshape2)
+library(readr)
+library(ggplot2)
+library(skimr)
+library(imputeTS)
+require(forecast)
+require(xts)
+library(ggfortify)
+library(rmdformats)
+library(TSA)
+library(zoo)
+library(Hmisc)
+library(astsa)
+library(quantmod)
+library(forecast)
+library(fGarch)
+library(vars)
+library(devtools)
+library(PairTrading)
+library(urca)
+```
+
+# Estimar el modelo garch de BMW
+
+Se define la función "archTest". 
+
+```{r echo=FALSE, warning=FALSE, message=FALSE}
+archTest <- function(rtn,m=10){
+  y=(rtn-mean(rtn))^2
+  T=length(rtn)
+  atsq=y[(m+1):T]
+  x=matrix(0,(T-m),m)
+  for (i in 1:m){
+    x[,i]=y[(m+1-i):(T-i)]
+  }
+  md=lm(atsq~x)
+  summary(md)
+}
+
+sSymbol="BMW.DE"
+```
+
+Extraemos los valores de la empresa BMW en las fechas que interesan para el análisis. Lo incluimos en un objeto "xData" para continuar el análisis. Utilizamos el paquete "Quantmod" para extraer los datos de las fechas necesarias para el análisis. 
+
+```{r warning = FALSE, echo=FALSE, message=FALSE}
+mData <- getSymbols("BMW.DE", from="2014-01-01", to="2020-11-20", auto.assign=FALSE) 
+xData=Ad(mData)
+```
+
+Se pasa al tratamiento de los datos. Este paso es útil para quedarnos con los rendimientos diarios, y además para suprimir los NAs de la muestra.
+
+```{r warning = FALSE, echo=FALSE}
+dRentCont=dailyReturn(xData,type='log',leading=FALSE)
+dRentCont=na.exclude(dRentCont)
+```
+
+Se obtiene la gráfica de precio, rentabilidad y volatilidad de los datos de BMW.
+
+```{r echo=FALSE}
+plot.zoo(cbind(Ad(mData),dRentCont,dRentCont^2),main=paste(sSymbol," y  Rentabilidad"),xlab="años",ylab=c("Precio","rentabilidad","Volatilidad"))
+```
+
+Se puede intuir un punto máximo que dataría de algún momento de principios de 2015 aproximadamente. Por otro lado, se observa una caída muy pronunciada a comienzos del 2020, muy probablemente indique la incertidumbre provocada en los mercados por la pandemia de Covid-19. Coindide además con los momentos de mayor rentabilidad y menor (mucha inestabilidad), algo que se puede observar directamente en la gráfica de abajo, la cual que representa la volatilidad.
+
+Se representan los residuos gráficamente en ACF y PACF. A simple vista parece que no son ruido blanco. Esto no es deseable, ya que en muchos puntos las líneas superan las bandas discontinuas azules.
+
+```{r echo=FALSE}
+#ACF & PACF 
+VolProxy=dRentCont^2
+
+#ACF y PACF
+tsdisplay(VolProxy) 
+```
+
+Para confirmar el gráfico anterior, es recomendable realizar el Ljung-Box Test, que maneja la hipótesis nula de que los residuos son ruido blanco.
+
+```{r echo=FALSE}
+#Ljung-Box Test 
+Box.test(VolProxy,lag=10,  type="Lj")
+Box.test(VolProxy,lag=20,  type="Lj")
+Box.test(VolProxy,lag=40,  type="Lj")
+```
+
+Observamos que se rechaza la hipótesis nula, por lo que los residuos no son ruido blanco. Se pasa a realizar el LM test.
+
+```{r echo=FALSE}
+#LM test
+archTest(dRentCont,20)
+```
+
+Procedemos a estimar un modelo ARCH (modelo autorregresivo con heterocedasticidad condicional). Tras ello se puede observar la información del AIC y resto de contrastes que realiza el modelo. Además, se grafican los residuos El modelo ARCH es propio para analizar series temporales y es útil para describir y analizar la distribución de los errores. En primer lugar se estima dicho modelo, y después se pasa a graficar los residuos.
+
+```{r echo=FALSE, warning = FALSE}
+#Estimación del modelo ARCH
+m1=garchFit(~1+garch(1,0),data=dRentCont,trace=F)
+summary(m1)
+
+#Residuos
+resi=residuals(m1,standardize=T)
+resi=xts(resi,order.by=index(dRentCont))
+tsdisplay(resi^2)
+```
+
+Dadas las gráfica inferiores, cabe interpretar que los residuos no son ruido blanco. A continuación, se pasa a estimar un modelo GARCH (1,1), que en realidad es un ARMA (1,1) sobre la varianza de los errores. Esta clase de modelos sirve para estudiar la volatilidad de los rendimientos del activo o activos en cuestión. Al igual en el modelo ARCH, se grafican también los errores.
+
+```{r warning = FALSE, echo=FALSE}
+# Estimación del modelo GARCH
+m2=garchFit(~1+garch(1,1),data=dRentCont,trace=F)
+summary(m2)
+
+#Errores
+resi=residuals(m2,standardize=T)
+resi=xts(resi,order.by=index(dRentCont))
+tsdisplay(resi^2)
+#plot(m2)
+```
+
+Se estima un nuevo modelo GARCH esta vez modificando el parámetro "cond.dist" que sirve para escoger la distribución a seguir por el modelo. En caso de no especificarlo, el valor por defecto es el de la distribución normal. A continuación, se grafica la volatilidad y los residuos derivados de este modelo.
+
+```{r warning=FALSE, echo=FALSE}
+#Estimación del modelo
+m3=garchFit(~1+garch(1,1),data=dRentCont,trace=F,cond.dist="std")
+summary(m3)
+#plot(m3)
+
+#Volatilidad
+v1=volatility(m3) 
+v1=xts(v1,order.by=index(dRentCont)) 
+plot(v1)
+
+#Residuos
+resi=residuals(m3,standardize=T)
+resi=xts(resi,order.by=index(dRentCont))
+tsdisplay(resi^2)
+#plot(resi)
+```
+
+Se realiza la predicción con el modelo "m3". Primero se hace sobre los 10 periodos siguientes y luego sobre 20. En un caso se ordena que grafique un total de 100 observaciones dentro de un intervalo de confianza del 90%.
+
+```{r echo=FALSE}
+predict(m3)
+predict(m3, n.ahead = 10, plot=TRUE, crit_val=2)
+predict(m3,n.ahead=20,plot=TRUE,conf=.9,nx=100)
+```
+
+
+# Plantear un modelo VAR mensual entre los dos activos.
+
+El modelo VAR (vectores autorregresivos) trata de contrastar si existe una retroalimentación o una mutua influencia entre dos variables al mismo tiempo. Se proceden a cargar los datos de las dos empresas sobre las que se quiere estudiar la posible relación (BMW y Volkswagen):
+
+```{r warning = FALSE, echo=FALSE}
+bmw <- getSymbols("BMW.DE", from="2014-01-01", to="2020-11-20", auto.assign=FALSE) 
+
+vol <- getSymbols("VOW3.DE", from="2014-01-01", to="2020-11-20", auto.assign=FALSE) 
+```
+
+Se obtienen los rendimientos por mes en ambos casos, pues se desea estimar un modelo VAR mensual entre ambas.
+
+```{r warning = FALSE, echo=FALSE}
+rbmw=monthlyReturn(bmw[,6])
+rvol=monthlyReturn(vol[,6])
+```
+
+Se genera un vector de datos con los rendimientos de ambas empresas.
+
+```{r, echo=FALSE}
+vY=cbind(rbmw,rvol)
+colnames(vY)=c("BMW","VOL")
+vY=na.omit(vY)
+```
+
+Se pasa a estimar un modelo VAR y a imprimir los resultados. A continuación, se mide tanto la causalidad de ambas (para ver si hay relación de que una determina la otra) como la repsuesta al impulso. Como último paso, se procede a predecir los siguientes ocho periodos, marcando un intervalo de confianza del 95%.
+
+```{r, echo=FALSE, warning=FALSE}
+#Se selecciona el modelo
+model.var1=VAR(vY,type="none")
+summary(model.var1)
+
+#Se comprueba si hay causalidad entre ambas
+causality(model.var1)
+
+#Respuesta al impulso
+model.ri=irf(model.var1)
+model.ri
+plot(model.ri)
+
+#Prediccion
+predict(model.var1, n.ahead = 8, ci = 0.95)
+```
+
+La conclusión que se deseaba extraer de la estimación de este modelo VAR entre BMW y Volkswagen es si existía causalidad entre ellas. A la vista de los resultados, cabe concluir que se rechaza la hipótesis nula de que una no causa la otra. Por lo tanto, cabe concluir que sí existe causalidad entre los datos de las series temporales de estas empresas.
